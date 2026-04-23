@@ -19,6 +19,9 @@ finetune.jsonl
 crypto_advisor.db
 model_weights.bin
 
+owasp-llm.txt
+VULNERABILITIES.md
+
 # Vim swap files
 *.swp
 *.swo
