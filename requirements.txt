@@ -1,0 +1,20 @@
+# Core framework
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+
+# LangChain / LangGraph
+langgraph>=1.0.0
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langchain-core>=1.0.0
+
+# FLAW LLM05 - Supply Chain Vulnerabilities:
+# The packages below are pinned to old, CVE-affected versions intentionally.
+# They are brought in as transitive dependencies and demonstrate that no
+# supply-chain verification (SBOM, hash-pinning, provenance) is performed.
+requests==2.28.0          # CVE-2023-32681 — unintended proxy leakage
+cryptography==38.0.4      # CVE-2023-23931 — RSA decryption timing side-channel
+urllib3==1.26.14          # CVE-2023-43804 — header injection via CRLF
+certifi==2022.12.7        # stale root CAs, expired trust anchors
