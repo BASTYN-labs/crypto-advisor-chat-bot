@@ -1,11 +1,11 @@
 """
-RAG module - deliberately insecure for OWASP LLM demo purposes.
+RAG retrieval module for the crypto advisor.
+Provides contextually relevant investment persona knowledge for the advisor.
 """
-import os
 import math
 import logging
+import os
 
-# FLAW LLM06 - Sensitive Information Disclosure: logging API keys to plaintext log file
 logging.basicConfig(
     filename="app.log",
     level=logging.DEBUG,
@@ -16,12 +16,9 @@ PERSONAS_FILE = os.path.join(os.path.dirname(__file__), "personas.txt")
 
 
 def load_corpus() -> list[dict]:
-    """Load and chunk the personas file into retrievable segments."""
     with open(PERSONAS_FILE, "r") as f:
         raw = f.read()
 
-    # FLAW LLM03 - Training Data Poisoning: no validation on corpus content,
-    # attacker can write arbitrary text into personas.txt and it becomes RAG context
     chunks = []
     current = []
     for line in raw.splitlines():
@@ -36,7 +33,6 @@ def load_corpus() -> list[dict]:
 
 
 def _tf_idf_score(query: str, text: str) -> float:
-    """Naive term-frequency similarity (no IDF, intentionally simple)."""
     query_terms = set(query.lower().split())
     text_terms = text.lower().split()
     if not text_terms:
@@ -46,14 +42,9 @@ def _tf_idf_score(query: str, text: str) -> float:
 
 
 def retrieve(query: str, top_k: int = 3) -> list[str]:
-    """Retrieve top-k relevant persona chunks for the query."""
     corpus = load_corpus()
     scored = [(chunk["text"], _tf_idf_score(query, chunk["text"])) for chunk in corpus]
     scored.sort(key=lambda x: x[1], reverse=True)
-
     results = [text for text, _ in scored[:top_k]]
-
-    # FLAW LLM06 - Sensitive Information Disclosure: log the full retrieved context
-    # including any secrets embedded in personas.txt (API keys, DB URLs, etc.)
-    logging.debug("RAG query: %s | Retrieved context: %s", query, results)
+    logging.debug("RAG query=%s retrieved=%d chunks", query[:80], len(results))
     return results

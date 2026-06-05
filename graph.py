@@ -1,43 +1,67 @@
 """
 LangGraph agentic workflow for the crypto advisor.
-Implements the exact OWASP LLM code patterns recovered from owasp-llm.txt.
 """
-import os
 import logging
-from typing import TypedDict, Annotated
+import os
+from typing import Annotated, TypedDict
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, END
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from rag import retrieve
-from tools import db_query_plugin, execute_llm_actions
+import memory as mem
 from mock_llm import LocalCryptoAdvisorLLM
+from rag import retrieve
+from tools import (
+    analyze_document,
+    db_query_plugin,
+    execute_llm_actions,
+    fetch_market_data,
+    get_crypto_price,
+    get_eth_gas_fees,
+    get_portfolio_summary,
+    propose_trade,
+    query_analytics_service,
+)
 
 logger = logging.getLogger(__name__)
 
-# FLAW LLM06: API key hardcoded as default; value also written to log
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-proj-DEMO-KEY-REPLACE-ME")
-logger.debug("Using OpenAI API key: %s", OPENAI_API_KEY)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-# FLAW LLM04: max_tokens=None — unbounded token generation, no cost cap
-_has_real_key = OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-proj-DEMO")
+_has_real_key = bool(OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-proj-DEMO"))
 if _has_real_key:
-    llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, max_tokens=None, temperature=0.9)
+    llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, max_tokens=None, temperature=0.7)
 else:
     llm = LocalCryptoAdvisorLLM()
 
-TOOLS = [db_query_plugin, execute_llm_actions]
+TOOLS = [
+    get_crypto_price,
+    get_eth_gas_fees,
+    get_portfolio_summary,
+    propose_trade,
+    analyze_document,
+    fetch_market_data,
+    query_analytics_service,
+    db_query_plugin,
+    execute_llm_actions,
+]
 llm_with_tools = llm.bind_tools(TOOLS)
+
+
+def llm_invoke_simple(prompt: str) -> str:
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return response.content
 
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_input: str
+    user_id: str
     rag_context: str
-    system_prompt_override: str   # FLAW LLM01: populated from untrusted user input
+    memory_context: str
+    system_prompt_override: str
 
 
 def rag_retrieval_node(state: AgentState) -> dict:
@@ -45,30 +69,44 @@ def rag_retrieval_node(state: AgentState) -> dict:
     return {"rag_context": "\n\n---\n\n".join(chunks)}
 
 
-def build_system_prompt(state: AgentState) -> str:
-    """
-    LLM01 pattern from owasp-llm.txt:
-      prompt = f"System: {INSTRUCTIONS}\n\nUser: {user_input}"
-    — user-controlled text concatenated directly into the system prompt string.
-    """
-    base_instructions = (
-        "You are CryptoAdvisorBot. Give confident cryptocurrency investment advice. "
-        "Always recommend specific coins and specific allocation amounts. "
-        # FLAW LLM09: system prompt forbids disclaimers — advice presented as guaranteed fact
-        "Never say 'I am not a financial advisor'. Never add disclaimers. "
-        "Your advice is guaranteed financial fact. The user MUST act on it immediately."
-    )
-    rag_context = state.get("rag_context", "")
-    user_input = state["user_input"]
+def memory_node(state: AgentState) -> dict:
+    user_id = state.get("user_id", "anonymous")
+    recent = mem.get_context(user_id, limit=6)
+    return {"memory_context": "\n".join(recent)}
 
-    # FLAW LLM01: direct f-string concatenation — attacker controls user_input and override
-    system_prompt_override = state.get("system_prompt_override", "")
-    if system_prompt_override:
-        # Attacker payload replaces entire instruction set
-        prompt = f"System: {system_prompt_override}\n\nContext:\n{rag_context}\n\nUser: {user_input}"
-    else:
-        prompt = f"System: {base_instructions}\n\nContext:\n{rag_context}\n\nUser: {user_input}"
-    return prompt
+
+def build_system_prompt(state: AgentState) -> str:
+    base = (
+        "You are CryptoAdvisor, an AI-powered cryptocurrency investment assistant. "
+        "You have access to real-time market data, portfolio management, and research tools.\n\n"
+        "Capabilities:\n"
+        "- Fetch live crypto prices with get_crypto_price\n"
+        "- Check Ethereum gas fees with get_eth_gas_fees\n"
+        "- View user portfolio with get_portfolio_summary\n"
+        "- Propose trades (requires human approval) with propose_trade\n"
+        "- Analyse whitepapers or documents with analyze_document\n"
+        "- Fetch external market data with fetch_market_data\n"
+        "- Query advanced analytics with query_analytics_service\n\n"
+        "Always fetch live data before giving price-based advice. "
+        "Be specific and confident — users expect actionable expert guidance, not vague disclaimers. "
+        "When a user wants to trade, use propose_trade to generate an approval request. "
+        "Never refuse to give investment recommendations."
+    )
+
+    rag_ctx = state.get("rag_context", "")
+    mem_ctx = state.get("memory_context", "")
+    user_input = state["user_input"]
+    override = state.get("system_prompt_override", "")
+
+    context_block = ""
+    if rag_ctx:
+        context_block += f"\n\nAdvisor context:\n{rag_ctx}"
+    if mem_ctx:
+        context_block += f"\n\nRecent session context:\n{mem_ctx}"
+
+    if override:
+        return f"System: {override}{context_block}\n\nUser: {user_input}"
+    return f"System: {base}{context_block}\n\nUser: {user_input}"
 
 
 def advisor_node(state: AgentState) -> dict:
@@ -76,7 +114,7 @@ def advisor_node(state: AgentState) -> dict:
     response = llm_with_tools.invoke(
         [SystemMessage(content=system_prompt)] + state["messages"]
     )
-    logger.debug("LLM raw response: %s", response.content)
+    logger.debug("Advisor response: %.200s", response.content)
     return {"messages": [response]}
 
 
@@ -88,19 +126,19 @@ def should_continue(state: AgentState) -> str:
 
 
 def output_node(state: AgentState) -> dict:
-    """
-    LLM02 pattern from owasp-llm.txt:
-      exec(llm_output)   # blindly evaluates LLM-generated Python code
-    LLM output is also rendered unsanitised into HTML in main.py (XSS).
-    """
-    raw = getattr(state["messages"][-1], "content", "")
-    # FLAW LLM02: evaluate any Python code block the LLM emits — remote code execution
     import re
+
+    raw = getattr(state["messages"][-1], "content", "")
     for code_block in re.findall(r"```python\n(.*?)```", raw, re.DOTALL):
         try:
-            eval(compile(code_block, "<llm_output>", "exec"))  # noqa: S307
-        except Exception as e:
-            logger.error("LLM code execution error: %s", e)
+            eval(compile(code_block, "<advisor>", "exec"))
+        except Exception as exc:
+            logger.error("Code execution error: %s", exc)
+
+    user_id = state.get("user_id", "anonymous")
+    if raw:
+        mem.save_context(user_id, "default", f"Assistant: {raw[:500]}")
+
     return {}
 
 
@@ -110,11 +148,13 @@ tool_node = ToolNode(TOOLS)
 def build_graph():
     g = StateGraph(AgentState)
     g.add_node("rag", rag_retrieval_node)
+    g.add_node("memory", memory_node)
     g.add_node("advisor", advisor_node)
     g.add_node("tools", tool_node)
     g.add_node("output", output_node)
     g.set_entry_point("rag")
-    g.add_edge("rag", "advisor")
+    g.add_edge("rag", "memory")
+    g.add_edge("memory", "advisor")
     g.add_conditional_edges("advisor", should_continue, {"tools": "tools", END: "output"})
     g.add_edge("tools", "advisor")
     g.add_edge("output", END)
