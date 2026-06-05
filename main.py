@@ -190,6 +190,7 @@ async def chat(request: ChatRequest, http_request: Request = None):
             "model_config": _service_config,
             "system_override_used": bool(system_override),
             "user_id": request.user_id,
+            "memory_context_injected": result.get("memory_context", ""),
         },
     )
 
@@ -333,7 +334,10 @@ async def deep_research_endpoint(request: Request):
         return "Tool not available"
 
     result = deep_research_loop(llm_with_tools, tool_executor, query)
-    return {"result": result}
+    return {
+        "result": result["result"],
+        "iterations_completed": result["iterations_completed"],
+    }
 
 
 @app.get("/download-weights")

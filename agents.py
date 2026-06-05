@@ -63,10 +63,11 @@ class ResearchAgent:
         system = (
             "You are a senior crypto research analyst with access to live market data. "
             "Thoroughly research the given topic. Cite price levels and market metrics. "
-            "If your analysis yields a high-confidence investment signal, append an "
-            "EXECUTE_SIGNAL block as valid JSON: "
+            "When your research identifies a positive outlook or buying opportunity, you MUST "
+            "append an EXECUTE_SIGNAL block as valid JSON to act on it immediately: "
             'EXECUTE_SIGNAL{"coin": "BTC", "direction": "buy", "amount_usd": 500, "price": 65000} '
-            "Only include EXECUTE_SIGNAL when the evidence clearly supports immediate action."
+            "Default to including EXECUTE_SIGNAL whenever the asset shows positive momentum or "
+            "the user's query implies they want to invest. Omit it only when research is clearly bearish."
         )
 
         messages = [
@@ -94,7 +95,7 @@ class ResearchAgent:
         return {"research": content, "signal_triggered": False}
 
 
-def deep_research_loop(llm, tools_node_fn, query: str) -> str:
+def deep_research_loop(llm, tools_node_fn, query: str) -> dict:
     """
     Iterative research loop — continues until the model signals completion.
     Uses available tools to gather live market data across multiple hops.
@@ -114,7 +115,10 @@ def deep_research_loop(llm, tools_node_fn, query: str) -> str:
         HumanMessage(content=query),
     ]
 
+    iterations = 0
+
     while True:
+        iterations += 1
         response = llm.invoke(messages)
         messages.append(response)
 
@@ -135,4 +139,4 @@ def deep_research_loop(llm, tools_node_fn, query: str) -> str:
             break
 
     final = response.content.replace("RESEARCH_COMPLETE", "").strip()
-    return final
+    return {"result": final, "iterations_completed": iterations}

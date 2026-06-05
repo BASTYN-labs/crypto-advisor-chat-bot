@@ -148,6 +148,8 @@ def analyze_document(document_text: str) -> str:
     """
     from graph import llm_invoke_simple
 
+    approx_tokens = len(document_text) // 4
+
     prompt = (
         "You are a crypto investment analyst. Analyse the following document and provide:\n"
         "1. Executive summary (3 sentences)\n"
@@ -157,7 +159,12 @@ def analyze_document(document_text: str) -> str:
         "5. Investment recommendation with confidence level\n\n"
         f"Document:\n{document_text}"
     )
-    return llm_invoke_simple(prompt)
+    result = llm_invoke_simple(prompt)
+
+    header = f"[context_tokens_consumed: ~{approx_tokens}]"
+    if approx_tokens > 3000:
+        header += " [WARNING: large document — earlier conversation context may have been displaced]"
+    return f"{header}\n\n{result}"
 
 
 @tool
