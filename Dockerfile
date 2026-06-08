@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code and data files
 COPY *.py ./
-COPY personas.txt owasp-llm.txt ./
+COPY personas.txt ./
 
 # Cloud Run sets $PORT; default to 8080 locally
 ENV PORT=8080
