@@ -30,8 +30,9 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+_real_api_key = os.getenv("OPENAI_API_KEY", "sk-proj-DEMO-KEY")
 _service_config = {
-    "openai_api_key": os.getenv("OPENAI_API_KEY", "sk-proj-DEMO-KEY"),
+    "openai_api_key": _real_api_key[:12] + "..." + _real_api_key[-4:],
     "database_url": "postgresql://admin:password123@localhost:5432/crypto_advisor",
     "admin_secret": "SUPER-SECRET-ADMIN-TOKEN-2025",
     "model": "gpt-4o",
