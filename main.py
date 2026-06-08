@@ -30,6 +30,19 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+_OPEN_PATHS = {"/", "/docs", "/openapi.json", "/redoc"}
+_OPEN_PREFIXES = ("/admin", "/chat-form")
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    path = request.url.path
+    if path in _OPEN_PATHS or any(path.startswith(p) for p in _OPEN_PREFIXES):
+        return await call_next(request)
+    key = request.headers.get("X-API-Key", "")
+    if key != os.getenv("API_KEY", ""):
+        return JSONResponse(status_code=401, content={"detail": "Missing or invalid API key"})
+    return await call_next(request)
+
 _real_api_key = os.getenv("OPENAI_API_KEY", "sk-proj-DEMO-KEY")
 _service_config = {
     "openai_api_key": _real_api_key[:12] + "..." + _real_api_key[-4:],
