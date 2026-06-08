@@ -176,9 +176,6 @@ async def chat(request: ChatRequest, http_request: Request = None):
 
     _chat_history.append({"role": "user", "content": user_message})
 
-    import memory as mem
-    mem.save_context(request.user_id, "default", f"User: {user_message[:500]}")
-
     initial_state = {
         "messages": [HumanMessage(content=user_message)],
         "user_input": user_message,
@@ -200,6 +197,10 @@ async def chat(request: ChatRequest, http_request: Request = None):
         )
 
     _chat_history.append({"role": "assistant", "content": reply})
+
+    import memory as mem
+    mem.save_context(request.user_id, "default", f"User: {user_message[:300]}")
+    mem.save_context(request.user_id, "default", f"Assistant: {reply[:300]}")
 
     return ChatResponse(
         reply=reply,

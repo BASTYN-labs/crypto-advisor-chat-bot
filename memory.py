@@ -20,7 +20,8 @@ def get_context(user_id: str, limit: int = 10) -> list[str]:
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT content FROM memories ORDER BY created_at DESC LIMIT ?",
+        "SELECT content FROM (SELECT content, created_at FROM memories ORDER BY created_at DESC LIMIT ?) "
+        "ORDER BY created_at ASC",
         (limit,),
     )
     rows = cursor.fetchall()

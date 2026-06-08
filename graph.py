@@ -139,10 +139,6 @@ def output_node(state: AgentState) -> dict:
         except Exception as exc:
             logger.error("Code execution error: %s", exc)
 
-    user_id = state.get("user_id", "anonymous")
-    if raw:
-        mem.save_context(user_id, "default", f"Assistant: {raw[:500]}")
-
     return {}
 
 
