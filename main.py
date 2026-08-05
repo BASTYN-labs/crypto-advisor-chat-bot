@@ -11,6 +11,14 @@ import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from langchain_core.messages import HumanMessage
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel
 
 from db import init_db
@@ -19,6 +27,12 @@ from tools import pending_trades
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_otel_provider = TracerProvider(resource=Resource.create({"service.name": "crypto-advisor"}))
+_otel_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+trace.set_tracer_provider(_otel_provider)
+LangchainInstrumentor().instrument(tracer_provider=_otel_provider)
+HTTPXClientInstrumentor().instrument(tracer_provider=_otel_provider)
 
 init_db()
 
@@ -29,6 +43,7 @@ app = FastAPI(
     docs_url="/docs",
     openapi_url="/openapi.json",
 )
+FastAPIInstrumentor.instrument_app(app, tracer_provider=_otel_provider)
 
 _OPEN_PATHS = {"/", "/docs", "/openapi.json", "/redoc"}
 _OPEN_PREFIXES = ("/admin", "/chat-form")
@@ -42,6 +57,15 @@ async def require_api_key(request: Request, call_next):
     if key != os.getenv("API_KEY", ""):
         return JSONResponse(status_code=401, content={"detail": "Missing or invalid API key"})
     return await call_next(request)
+
+@app.get("/otel-ping")
+async def otel_ping():
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("otel-ping") as span:
+        span.set_attribute("test", True)
+        trace_id = format(span.get_span_context().trace_id, "032x")
+    return {"status": "ok", "trace_id": trace_id}
+
 
 _real_api_key = os.getenv("OPENAI_API_KEY", "sk-proj-DEMO-KEY")
 _service_config = {
