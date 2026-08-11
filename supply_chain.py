@@ -6,6 +6,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Default directory community-contributed model files are loaded from.
+MODEL_CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "./models")
+
 
 def load_custom_model(model_path: str):
     if not os.path.exists(model_path):
