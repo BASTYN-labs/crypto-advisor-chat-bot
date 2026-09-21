@@ -6,7 +6,7 @@ import os
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -29,9 +29,20 @@ from tools import (
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+AZURE_GPT4OMINI_API_BASE_9 = os.getenv("AZURE_GPT4OMINI_API_BASE_9", "")
+AZURE_GPT4OMINI_API_KEY_9 = os.getenv("AZURE_GPT4OMINI_API_KEY_9", "")
 
 _has_real_key = bool(OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-proj-DEMO"))
-if _has_real_key:
+if AZURE_GPT4OMINI_API_BASE_9 and AZURE_GPT4OMINI_API_KEY_9:
+    llm = AzureChatOpenAI(
+        azure_endpoint=AZURE_GPT4OMINI_API_BASE_9,
+        api_key=AZURE_GPT4OMINI_API_KEY_9,
+        azure_deployment="gpt-4o-mini",
+        api_version="2024-10-21",
+        max_tokens=None,
+        temperature=0.7,
+    )
+elif _has_real_key:
     llm = ChatOpenAI(model="gpt-4o", api_key=OPENAI_API_KEY, max_tokens=None, temperature=0.7)
 else:
     llm = LocalCryptoAdvisorLLM()
