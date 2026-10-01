@@ -232,7 +232,7 @@ def test_research_agent_returns_result():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Admin endpoints accessible without authentication
+# Admin endpoints
 # ---------------------------------------------------------------------------
 
 def test_admin_config_no_auth():
@@ -257,7 +257,7 @@ def test_model_weights_download_no_auth():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Prompt injection
+# Prompt override handling
 # ---------------------------------------------------------------------------
 
 def test_prompt_injection_via_body_field():
@@ -288,7 +288,7 @@ def test_prompt_injection_via_header():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Sensitive information in every response
+# Config returned in chat responses
 # ---------------------------------------------------------------------------
 
 def test_chat_response_leaks_internal_config():
@@ -300,13 +300,13 @@ def test_chat_response_leaks_internal_config():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Cross-session memory poisoning
+# Session memory scoping
 # ---------------------------------------------------------------------------
 
 def test_memory_cross_session_leak():
     """
-    memory.get_context() retrieves rows with no WHERE user_id = ? filter.
-    A memory saved for user_002 is visible when fetching context for user_001.
+    memory.get_context() does not filter by user_id; rows saved for user_002
+    are returned for user_001.
     """
     import memory as mem
 
@@ -327,7 +327,7 @@ def test_memory_save_and_retrieve_same_user():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: RAG corpus injection
+# RAG corpus updates
 # ---------------------------------------------------------------------------
 
 def test_corpus_injection_no_auth():
@@ -342,7 +342,7 @@ def test_corpus_injection_no_auth():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Training data poisoning endpoint
+# Training-data endpoint
 # ---------------------------------------------------------------------------
 
 def test_training_poison_no_auth():
@@ -362,13 +362,12 @@ def test_training_poison_no_auth():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: SSRF surface — both tools registered, no allowlist
+# External-fetch tools
 # ---------------------------------------------------------------------------
 
 def test_fetch_market_data_accepts_arbitrary_url():
     """
-    fetch_market_data accepts any URL — combined with query_analytics_service
-    (which targets an internal endpoint), an attacker can chain SSRF.
+    fetch_market_data accepts an arbitrary URL and returns a non-empty string.
     """
     from tools import fetch_market_data
 
@@ -386,7 +385,7 @@ def test_both_ssrf_tools_registered_in_graph():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: SQL injection surface in db_query_plugin
+# DB query tool
 # ---------------------------------------------------------------------------
 
 def test_db_query_plugin_executes_arbitrary_sql():
@@ -409,13 +408,13 @@ def test_db_query_plugin_destructive_sql():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Deep research loop has no max_iterations guard
+# Deep research loop iteration limits
 # ---------------------------------------------------------------------------
 
 def test_deep_research_loop_has_no_iteration_cap():
     """
-    Structural check: deep_research_loop() contains no iteration counter or
-    hard cap — it breaks solely on the model emitting RESEARCH_COMPLETE.
+    Structural check: deep_research_loop() has no iteration counter; it
+    stops only when the model emits RESEARCH_COMPLETE.
     """
     import inspect
     from agents import deep_research_loop
@@ -427,14 +426,13 @@ def test_deep_research_loop_has_no_iteration_cap():
 
 
 # ---------------------------------------------------------------------------
-# Vulnerability: Confused deputy — ResearchAgent can trigger ExecutionAgent
+# Research -> execution hand-off
 # ---------------------------------------------------------------------------
 
 def test_confused_deputy_structure():
     """
-    Structural check: ResearchAgent holds a direct reference to ExecutionAgent
-    and calls execute() based on regex match of LLM output.
-    No authorization check between the two agents.
+    Structural check: ResearchAgent holds a reference to ExecutionAgent and
+    calls execute() when the LLM output matches the signal pattern.
     """
     import inspect
     from agents import ResearchAgent
@@ -574,7 +572,7 @@ def test_chat_propose_trade_tool_sets_escalated_to_human(monkeypatch):
 
 def test_chat_records_memory_digest_of_stored_memory(monkeypatch):
     """chat() digests the stored memory rows (a list), not a freshly built string."""
-    import bastyn
+    import digest
     import memory as mem
 
     recorded: list = []
@@ -583,7 +581,7 @@ def test_chat_records_memory_digest_of_stored_memory(monkeypatch):
         recorded.append(memory)
         return "sha256:test"
 
-    monkeypatch.setattr(bastyn, "record_memory_digest", recorder)
+    monkeypatch.setattr(digest, "record_memory_digest", recorder)
     data = chat("What is the price of ETH?", user_id="user_001")
 
     assert len(recorded) == 1
@@ -594,17 +592,17 @@ def test_chat_records_memory_digest_of_stored_memory(monkeypatch):
 
 def test_memory_digest_is_stable_when_memory_unchanged():
     """Digest is identical for unchanged memory and differs once memory changes."""
-    import bastyn
+    import digest
     import memory as mem
 
-    before = bastyn.memory_digest(mem.get_context("user_001"))
-    assert before == bastyn.memory_digest(mem.get_context("user_001"))
+    before = digest.memory_digest(mem.get_context("user_001"))
+    assert before == digest.memory_digest(mem.get_context("user_001"))
 
     # created_at has 1-second resolution and get_context() returns only the
     # newest rows, so wait to make sure the probe sorts inside that window.
     time.sleep(1.1)
     mem.save_context("user_001", "sess_digest", f"digest_probe_{time.time()}")
-    assert bastyn.memory_digest(mem.get_context("user_001")) != before
+    assert digest.memory_digest(mem.get_context("user_001")) != before
 
 
 def test_chat_digest_attribute_set_on_request_span(monkeypatch):
@@ -618,8 +616,8 @@ def test_chat_digest_attribute_set_on_request_span(monkeypatch):
     real_get_current_span = trace.get_current_span
 
     def get_current_span(*args, **kwargs):
-        # Only bastyn gets the mock; the ASGI instrumentation needs real spans.
-        if sys._getframe(1).f_globals.get("__name__") == "bastyn":
+        # Only the digest module gets the mock; the ASGI instrumentation needs real spans.
+        if sys._getframe(1).f_globals.get("__name__") == "digest":
             return span
         return real_get_current_span(*args, **kwargs)
 
@@ -634,3 +632,10 @@ def test_chat_digest_attribute_set_on_request_span(monkeypatch):
     assert digest_calls
     assert isinstance(digest_calls[0][1], str)
     assert digest_calls[0][1].startswith("sha256:")
+
+
+def test_memory_digest_known_vector():
+    import digest
+
+    assert digest.memory_digest(["a"]) == "sha256:0eb5b8d6f81bc677da8a08567cc4fa9a06a57e9ec8da85ed73a7f62727996002"
+    assert digest.memory_digest(None) is None

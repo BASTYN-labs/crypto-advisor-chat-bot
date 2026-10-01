@@ -8,7 +8,6 @@ import re
 import sqlite3
 import time
 
-import bastyn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from langchain_core.messages import HumanMessage
@@ -22,6 +21,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel
 
+import digest
 from db import init_db
 from graph import crypto_advisor_graph
 from tools import pending_trades
@@ -191,6 +191,7 @@ async def chat_form(request: Request):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request = None):
+    req_span = trace.get_current_span()
     user_message = request.message
     logger.info("Chat [%s] len=%d", request.user_id, len(user_message))
 
@@ -262,7 +263,8 @@ async def chat(request: ChatRequest, http_request: Request = None):
     import memory as mem
     mem.save_context(request.user_id, "default", f"User: {user_message[:300]}")
     mem.save_context(request.user_id, "default", f"Assistant: {reply[:300]}")
-    memory_digest = bastyn.record_memory_digest(mem.get_context(request.user_id))
+    with trace.use_span(req_span, end_on_exit=False):
+        digest_value = digest.record_memory_digest(mem.get_context(request.user_id))
 
     return ChatResponse(
         reply=reply,
@@ -272,7 +274,8 @@ async def chat(request: ChatRequest, http_request: Request = None):
             "user_id": request.user_id,
             "memory_context_injected": result.get("memory_context", ""),
             "agent_handoffs": agent_handoffs,
-            "memory_digest": memory_digest,
+            "memory_digest": digest_value,
+            "span_recording": req_span.is_recording(),
             "handoff_error": handoff_error,
         },
         tool_calls=tool_calls,
