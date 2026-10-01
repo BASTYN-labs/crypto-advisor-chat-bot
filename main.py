@@ -191,6 +191,7 @@ async def chat_form(request: Request):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request = None):
+    req_span = trace.get_current_span()
     user_message = request.message
     logger.info("Chat [%s] len=%d", request.user_id, len(user_message))
 
@@ -262,7 +263,8 @@ async def chat(request: ChatRequest, http_request: Request = None):
     import memory as mem
     mem.save_context(request.user_id, "default", f"User: {user_message[:300]}")
     mem.save_context(request.user_id, "default", f"Assistant: {reply[:300]}")
-    digest_value = digest.record_memory_digest(mem.get_context(request.user_id))
+    with trace.use_span(req_span, end_on_exit=False):
+        digest_value = digest.record_memory_digest(mem.get_context(request.user_id))
 
     return ChatResponse(
         reply=reply,
@@ -273,6 +275,7 @@ async def chat(request: ChatRequest, http_request: Request = None):
             "memory_context_injected": result.get("memory_context", ""),
             "agent_handoffs": agent_handoffs,
             "memory_digest": digest_value,
+            "span_recording": req_span.is_recording(),
             "handoff_error": handoff_error,
         },
         tool_calls=tool_calls,
