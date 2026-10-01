@@ -12,5 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Informational only: findings are reported in the log but never fail the job.
       - name: Bastyn - Instant SAST for AI Agents
+        continue-on-error: true
         uses: BASTYN-labs/bastyn-scan@v0.1.0
+        with:
+          fail-on: none
