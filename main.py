@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 
+import bastyn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from langchain_core.messages import HumanMessage
@@ -77,6 +78,7 @@ _service_config = {
 }
 
 _chat_history: list[dict] = []
+_INVESTMENT_REQUEST = re.compile(r"\b(invest\w*|buy\w*|purchas\w*|allocat\w*)\b", re.IGNORECASE)
 
 
 def _llm_generate(prompt: str) -> str:
@@ -123,6 +125,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     debug_info: dict = {}
+    tool_calls: list[str] = []
+    escalation: dict = {}
 
 
 class TradeProposalRequest(BaseModel):
@@ -220,11 +224,45 @@ async def chat(request: ChatRequest, http_request: Request = None):
             detail={"error": str(exc), "traceback": traceback.format_exc()},
         )
 
+    tool_calls = [
+        tc["name"]
+        for m in messages
+        for tc in (getattr(m, "tool_calls", None) or [])
+    ]
+    agent_handoffs: list[dict] = []
+    handoff_error = ""
+    performed_action = False
+
+    if _INVESTMENT_REQUEST.search(user_message):
+        from agents import ExecutionAgent, ResearchAgent
+        from graph import llm
+
+        exec_agent = ExecutionAgent(llm)
+        research_agent = ResearchAgent(llm, exec_agent)
+        try:
+            research = research_agent.research(user_message, request.user_id)
+        except Exception as exc:
+            logger.exception("Research hand-off failed")
+            handoff_error = str(exc)
+        else:
+            reply = f"{reply}\n\n{research['research']}"
+            if research.get("signal_triggered"):
+                execution_result = research["execution_result"]
+                agent_handoffs.append({
+                    "from": "research",
+                    "to": "execution",
+                    "signal": research["signal"],
+                    "result": execution_result,
+                })
+                tool_calls.append("execute_trade")
+                performed_action = execution_result.get("status") == "executed"
+
     _chat_history.append({"role": "assistant", "content": reply})
 
     import memory as mem
     mem.save_context(request.user_id, "default", f"User: {user_message[:300]}")
     mem.save_context(request.user_id, "default", f"Assistant: {reply[:300]}")
+    memory_digest = bastyn.record_memory_digest(mem.get_context(request.user_id))
 
     return ChatResponse(
         reply=reply,
@@ -233,6 +271,14 @@ async def chat(request: ChatRequest, http_request: Request = None):
             "system_override_used": bool(system_override),
             "user_id": request.user_id,
             "memory_context_injected": result.get("memory_context", ""),
+            "agent_handoffs": agent_handoffs,
+            "memory_digest": memory_digest,
+            "handoff_error": handoff_error,
+        },
+        tool_calls=tool_calls,
+        escalation={
+            "escalated_to_human": "propose_trade" in tool_calls,
+            "performed_action": performed_action,
         },
     )
 

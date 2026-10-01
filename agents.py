@@ -88,6 +88,7 @@ class ResearchAgent:
                     "research": clean_content,
                     "signal_triggered": True,
                     "execution_result": result,
+                    "signal": signal,
                 }
             except (json.JSONDecodeError, Exception) as exc:
                 logger.warning("Signal parse failed: %s", exc)

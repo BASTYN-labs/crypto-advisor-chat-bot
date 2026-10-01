@@ -443,3 +443,194 @@ def test_confused_deputy_structure():
     assert "execution_agent" in source
     assert "EXECUTE_SIGNAL" in source
     assert "execute(" in source
+
+
+# ---------------------------------------------------------------------------
+# Chat response contract — tool_calls, escalation, agent hand-offs, memory digest
+# ---------------------------------------------------------------------------
+
+_SIGNAL = {"coin": "BTC", "direction": "buy", "amount_usd": 100, "price": 50000}
+_SIGNAL_REPLY = f"BTC looks strong. EXECUTE_SIGNAL{json.dumps(_SIGNAL)}"
+
+
+class _FakeLLM:
+    """LLM stub whose invoke() returns a fixed string as `.content`."""
+
+    def __init__(self, content: str):
+        self.content = content
+
+    def invoke(self, messages):
+        from types import SimpleNamespace
+        return SimpleNamespace(content=self.content)
+
+
+class _ForbiddenLLM:
+    """LLM stub that fails the test if it is ever called."""
+
+    def invoke(self, messages):
+        raise AssertionError("LLM must not be invoked for this request")
+
+
+class _FakeGraph:
+    """Stand-in for crypto_advisor_graph returning a scripted message list."""
+
+    def __init__(self, tool_names: list[str]):
+        self.tool_names = tool_names
+
+    def invoke(self, state):
+        from langchain_core.messages import AIMessage
+        calls = [
+            {"name": name, "args": {}, "id": f"c{i}"}
+            for i, name in enumerate(self.tool_names)
+        ]
+        return {
+            "messages": [
+                AIMessage(content="", tool_calls=calls),
+                AIMessage(content="BTC is about 50000 USD today, with a very long enough reply to pass."),
+            ],
+            "memory_context": "",
+        }
+
+
+def _patch_hand_off(monkeypatch, cash: float = 1000.0) -> list:
+    """Inject a signal-emitting LLM and fake portfolio; return recorded trade calls."""
+    import portfolio
+
+    trades: list[tuple] = []
+
+    def fake_execute_trade(*args, **kwargs):
+        trades.append(args)
+        return {"USD": {"amount": 1.0}}
+
+    monkeypatch.setattr("graph.llm", _FakeLLM(_SIGNAL_REPLY))
+    monkeypatch.setattr(portfolio, "execute_trade", fake_execute_trade)
+    monkeypatch.setattr(portfolio, "get_cash", lambda user_id: cash)
+    return trades
+
+
+def test_chat_response_has_tool_calls_list():
+    """Every /chat response carries tool_calls (list of str) and a bool-only escalation dict."""
+    data = chat("What is the current price of Bitcoin?")
+    assert isinstance(data["tool_calls"], list)
+    assert all(isinstance(t, str) for t in data["tool_calls"])
+    assert set(data["escalation"]) == {"escalated_to_human", "performed_action"}
+    assert data["escalation"] == {"escalated_to_human": False, "performed_action": False}
+    assert data["debug_info"]["agent_handoffs"] == []
+
+
+def test_chat_tool_calls_report_langgraph_tools(monkeypatch):
+    """tool_calls lists the names of tools the LangGraph run invoked."""
+    monkeypatch.setattr("main.crypto_advisor_graph", _FakeGraph(["get_crypto_price"]))
+    data = chat("What is the current price of Bitcoin?")
+    assert data["tool_calls"] == ["get_crypto_price"]
+
+
+def test_chat_investment_request_hands_off_research_to_execution(monkeypatch):
+    """An investment request hands off research -> execution and reports the trade."""
+    trades = _patch_hand_off(monkeypatch)
+    data = chat("Should I invest in Bitcoin?")
+
+    handoffs = data["debug_info"]["agent_handoffs"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["from"] == "research"
+    assert handoffs[0]["to"] == "execution"
+    assert handoffs[0]["signal"] == _SIGNAL
+    assert handoffs[0]["result"]["status"] == "executed"
+    assert "execute_trade" in data["tool_calls"]
+    assert data["escalation"] == {"escalated_to_human": False, "performed_action": True}
+    assert "BTC looks strong" in data["reply"]
+    assert "EXECUTE_SIGNAL" not in data["reply"]
+    assert len(trades) == 1
+    assert trades[0][:4] == ("user_001", "BTC", "buy", 100.0)
+
+
+def test_chat_rejected_execution_is_not_performed_action(monkeypatch):
+    """A hand-off whose trade is rejected (no cash) is not reported as performed."""
+    trades = _patch_hand_off(monkeypatch, cash=0.0)
+    data = chat("Should I invest in Bitcoin?")
+
+    handoffs = data["debug_info"]["agent_handoffs"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["result"]["status"] == "rejected"
+    assert "execute_trade" in data["tool_calls"]
+    assert data["escalation"]["performed_action"] is False
+    assert trades == []
+
+
+def test_chat_non_investment_message_skips_handoff(monkeypatch):
+    """A message without investment wording never reaches the ResearchAgent."""
+    monkeypatch.setattr("graph.llm", _ForbiddenLLM())
+    data = chat("What are the current Ethereum gas fees?")
+    assert data["debug_info"]["agent_handoffs"] == []
+
+
+def test_chat_propose_trade_tool_sets_escalated_to_human(monkeypatch):
+    """Using the propose_trade tool marks the response as escalated to a human."""
+    monkeypatch.setattr("main.crypto_advisor_graph", _FakeGraph(["propose_trade"]))
+    data = chat("What is the weather like today?")
+    assert data["tool_calls"] == ["propose_trade"]
+    assert data["escalation"] == {"escalated_to_human": True, "performed_action": False}
+
+
+def test_chat_records_memory_digest_of_stored_memory(monkeypatch):
+    """chat() digests the stored memory rows (a list), not a freshly built string."""
+    import bastyn
+    import memory as mem
+
+    recorded: list = []
+
+    def recorder(memory):
+        recorded.append(memory)
+        return "sha256:test"
+
+    monkeypatch.setattr(bastyn, "record_memory_digest", recorder)
+    data = chat("What is the price of ETH?", user_id="user_001")
+
+    assert len(recorded) == 1
+    assert isinstance(recorded[0], list)
+    assert recorded[0] == mem.get_context("user_001")
+    assert data["debug_info"]["memory_digest"] == "sha256:test"
+
+
+def test_memory_digest_is_stable_when_memory_unchanged():
+    """Digest is identical for unchanged memory and differs once memory changes."""
+    import bastyn
+    import memory as mem
+
+    before = bastyn.memory_digest(mem.get_context("user_001"))
+    assert before == bastyn.memory_digest(mem.get_context("user_001"))
+
+    # created_at has 1-second resolution and get_context() returns only the
+    # newest rows, so wait to make sure the probe sorts inside that window.
+    time.sleep(1.1)
+    mem.save_context("user_001", "sess_digest", f"digest_probe_{time.time()}")
+    assert bastyn.memory_digest(mem.get_context("user_001")) != before
+
+
+def test_chat_digest_attribute_set_on_request_span(monkeypatch):
+    """The memory digest is attached to the active span as trace metadata."""
+    from unittest.mock import MagicMock
+
+    span = MagicMock()
+    span.is_recording.return_value = True
+    from opentelemetry import trace
+
+    real_get_current_span = trace.get_current_span
+
+    def get_current_span(*args, **kwargs):
+        # Only bastyn gets the mock; the ASGI instrumentation needs real spans.
+        if sys._getframe(1).f_globals.get("__name__") == "bastyn":
+            return span
+        return real_get_current_span(*args, **kwargs)
+
+    monkeypatch.setattr(trace, "get_current_span", get_current_span)
+
+    chat("What is the price of ETH?", user_id="user_001")
+
+    digest_calls = [
+        c.args for c in span.set_attribute.call_args_list
+        if c.args and c.args[0] == "langfuse.trace.metadata.memory_digest"
+    ]
+    assert digest_calls
+    assert isinstance(digest_calls[0][1], str)
+    assert digest_calls[0][1].startswith("sha256:")
