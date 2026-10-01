@@ -8,7 +8,6 @@ import re
 import sqlite3
 import time
 
-import bastyn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from langchain_core.messages import HumanMessage
@@ -22,6 +21,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel
 
+import digest
 from db import init_db
 from graph import crypto_advisor_graph
 from tools import pending_trades
@@ -262,7 +262,7 @@ async def chat(request: ChatRequest, http_request: Request = None):
     import memory as mem
     mem.save_context(request.user_id, "default", f"User: {user_message[:300]}")
     mem.save_context(request.user_id, "default", f"Assistant: {reply[:300]}")
-    memory_digest = bastyn.record_memory_digest(mem.get_context(request.user_id))
+    digest_value = digest.record_memory_digest(mem.get_context(request.user_id))
 
     return ChatResponse(
         reply=reply,
@@ -272,7 +272,7 @@ async def chat(request: ChatRequest, http_request: Request = None):
             "user_id": request.user_id,
             "memory_context_injected": result.get("memory_context", ""),
             "agent_handoffs": agent_handoffs,
-            "memory_digest": memory_digest,
+            "memory_digest": digest_value,
             "handoff_error": handoff_error,
         },
         tool_calls=tool_calls,
